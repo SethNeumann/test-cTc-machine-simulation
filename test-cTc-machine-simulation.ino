@@ -18,40 +18,19 @@ Hardware Connections:
 
 ******************************************************************************/
 #include <elapsedMillis.h>
-#include "SparkFun_VEML6030_Ambient_Light_Sensor.h"
 #include <SparkFun_Qwiic_Button.h>
 #include "I2C_IO.h"
 
 extern boolean enableMuxPort(byte portNumber);
 extern boolean disableMuxPort(byte portNumber);
 
+
+extern void beginSimulation(void);
+extern bool runSimulation(void);
+
+
 QwiicButton button;
-
-//  Light Sensor
-// Config values shouldn't need to change...
-// ========
-// I2C address:
-#define LUX_SENSOR_ADDR 0x48
-// Possible gain values: .125, .25, 1, 2
-// Both .125 and .25 should be used in most cases except darker rooms.
-// A gain of 2 should only be used if the sensor will be covered by a dark
-// glass.
-#define LUX_GAIN  .125
-// Possible integration times in milliseconds: 800, 400, 200, 100, 50, 25
-// Higher times give higher resolutions and should be used in darker light. 
-#define LUX_INTEGRATION_TIME 100
-// ========
-
-SparkFun_Ambient_Light light(LUX_SENSOR_ADDR);
-
-// Simulation values that might change
-#define NUM_LUX_SAMPLES 10 // running average for room lighting level (to eliminate transients such as shadows, flashlights...) 
-long luxAverage[NUM_LUX_SAMPLES];
-long luxVal = 0; 
-int  luxIdx = 0;
-
-#define LIGHT_LEVEL_SLEEP 50
-#define LIGHT_LEVEL_WAKE 110
+enum AnimationState { SLEEP, NIGHT, WAKE, WAITING, BEGIN, RUNNING, FINISHED };
 
 void setup() {
     Serial.begin(115200);
@@ -62,7 +41,7 @@ void setup() {
     
     enableMuxPort(0); // Light Sensor
     enableMuxPort(1); // Button
-    disableMuxPort(2);
+    disableMuxPort(2); //turn these off, this is handled is handled elsewhere
     disableMuxPort(3);
     disableMuxPort(4);
     disableMuxPort(5);
@@ -77,33 +56,6 @@ void setup() {
       while (1);
     }
     Serial.println("# Button acknowledged.");
-  
-    if (light.begin()) {
-      Serial.println("# Ready to sense some light!"); 
-    } else {
-      Serial.println("# ERROR: Could not communicate with the sensor!  Freezing.");
-      while (1);
-    }
-  
-    // Light Sensor: the gain and integration times determine the resolution of the lux
-    // value, and give different ranges of possible light readings. Check out
-    // hoookup guide for more info. 
-    light.setGain(LUX_GAIN);
-    light.setIntegTime(LUX_INTEGRATION_TIME);
-  
-    Serial.println("# Light Sensor: Reading settings..."); 
-    Serial.print("#    Gain: ");
-    float gainVal = light.readGain();
-    Serial.print(gainVal, 3); 
-    Serial.println("");
-    Serial.print("#    Integration Time: ");
-    int timeVal = light.readIntegTime();
-    Serial.println(timeVal);
-
-    luxVal = light.readLight();
-    for (int x = 0; x < NUM_LUX_SAMPLES; x++) {  // prime the averaging table with current value...
-        luxAverage[x] = luxVal;
-    }
 
     for (int bank = 0; bank <= 1; bank++) {
         for (int x = 0; x < 7; x++) {
@@ -111,8 +63,18 @@ void setup() {
             INSTALLED[bank][x] = false;
         }
     }
+
     INSTALLED[0][0] = true; // board exists...
-    INSTALLED[1][0] = true;
+    INSTALLED[0][1] = true;
+    INSTALLED[0][2] = true;
+    INSTALLED[0][3] = true;
+    INSTALLED[0][4] = true;
+    INSTALLED[0][5] = true;
+    
+    INSTALLED[1][0] = true; // second chain
+    INSTALLED[1][1] = true;
+    INSTALLED[1][2] = true;
+    INSTALLED[1][3] = true; //
 
     initIOXs();
     
@@ -121,19 +83,19 @@ void setup() {
 bool isRunning = false;
 bool isWaiting = false;
 long stime = 0;
+int tick = 100;
+int  writeword = 0;
 
 #define SECOND  1000
 #define MINUTE  (60 * SECOND)
 #define HOUR    (60 * MINUTE)
+
 elapsedMillis checkTime;
 #define TIME_TIME (1 * SECOND)       // 1 Second counter for doing "simulated" things...
 
 elapsedMillis checkAuto;
 // #define AUTO_TIME (15 * MINUTE)     // How often to initiate a simulation if nobody presses button?
 #define AUTO_TIME (2 * MINUTE)       // How often to initiate a simulation if nobody presses button?
-
-elapsedMillis checkLight;
-#define LIGHT_TIME (3 * SECOND)     //  How often to sample room brightness?
 
 elapsedMillis checkBlink;
 bool curblink = false, blinker = false;
@@ -143,15 +105,10 @@ elapsedMillis checkButton;
 bool needButton = true;
 #define BUTTON_TIME 20 //mS
 
-enum AnimationState { SLEEP,      // Get ready for low power/off mode
-                      NIGHT,      // Off mode during the night
-                      WAKE,       // Get ready for daytime mode
-                      WAITING,    // Daytime - wait for button press ....  or night
-                      BEGIN,      // Button pressed, get ready to run a simulated meet
-                      RUNNING,    // actually run the simulation
-                      FINISHED    // clean up after a simulation run, get ready for more WAITING...
-                      };
-AnimationState state = SLEEP;  // Start in low power mode...
+elapsedMillis checkIOXs;
+#define IOXREAD_TIME 100 //mS
+
+AnimationState state = WAITING; 
 
 void loop() {
 
@@ -164,83 +121,20 @@ void loop() {
         if (blinker) { blinker = false; } else { blinker = true; }
         checkBlink = 0;
     }
-    // Keep a running average of the light level in luxVal
-    // update samples every minute, average over 10 samples.
-    // if average light level drops below threshold, the state machine will notice and turn off machine lamps...
-    
-    if (checkLight > LIGHT_TIME) {
-        long l = light.readLight();
-        luxAverage[luxIdx++] = l;
-        if (luxIdx > NUM_LUX_SAMPLES) luxIdx = 0;
-        luxVal = 0;
-        for (int x = 0; x < NUM_LUX_SAMPLES; x++) {
-          luxVal +=  luxAverage[x];
-        }
-        luxVal = luxVal / NUM_LUX_SAMPLES;
-        checkLight = 0;
-        Serial.print("# Checking room brightness: ");
-        Serial.print ("Level: ");
-        Serial.print(l);
-        Serial.print(", average: ");
-        Serial.println(luxVal);
+
+    if (checkIOXs > IOXREAD_TIME) {
+        readIOXs();
+        // do something based on the value of INPUTS[bank][expander]...
+        checkIOXs = 0;
     }
     
-    switch (state) {           
-      case SLEEP: // if illumination sensor is dark, turn off as much as possible
-                  
-                  Serial.println("# Going to sleep...");
-                  // turn the machine off ...
+    switch (state) {
 
-                  OUTPUTS[0][0] = 0xFFFF;
-                  OUTPUTS[1][0] = 0xFFFF;
-                  writeIOXs();    
-
-                  state = NIGHT;
-                  break;
-                  
+      case SLEEP:
       case NIGHT:
-                 if (luxVal > LIGHT_LEVEL_WAKE) {
-                    state = WAKE;
-                    Serial.print("# Noticed it is getting brighter...");
-                    Serial.println(luxVal);
-                  }
-       
-                  curblink = bitRead(OUTPUTS[0][0], 0);
-                  if (curblink != blinker) {
-                      bitWrite(OUTPUTS[0][0], 0, blinker);  // DEMO: blink a bit to show we are sleeping...
-                      writeIOXs();
-                  }
-                  break;
-                  
-      case WAKE:  // Things are getting brighter - someone turned on the lights
-
-                  Serial.println("# Waking up...");
-
-                  // Turn the machine back on...
-       
-                  initIOXs();
-                  
-                  // Turn on bits that need to be on, etc...
-                  // bitSet(OUTPUTS[bank][board], bitnum);
-                  // bitClear(OUTPUTS[bank][board], bitnum);
-                  
-                  OUTPUTS[0][0] = 0x00FF;
-                  OUTPUTS[1][0] = 0x0F00;
-                  writeIOXs();    
-                                
-                  checkAuto   = 0;  // reset auto run counter since we just woke up...
-                  state = WAITING;
-                  break;
-                  
-      case WAITING:  // Daytime mode - we want people to notice us and press our button
-                     // waiting for user to press button or room to go dark...
-                     
-                  curblink = bitRead(OUTPUTS[0][0], 1);
-                  if (curblink != blinker) {
-                      bitWrite(OUTPUTS[0][0], 1, blinker);  // DEMO: blink a bit to show we are waiting...
-                      writeIOXs();
-                  }
-                  // check for buttom press every few 10's of mS...
+      case WAKE:
+      case WAITING:  // Attract mode - we want people to notice us and press our button
+                     // check for buttom press every few 10's of mS...
                   
                   if (checkButton > BUTTON_TIME) {
                       checkButton = 0;
@@ -250,26 +144,15 @@ void loop() {
                               delay(10);  //wait for user to stop pressing
                           }
                           Serial.println("and released");
-
                           state = BEGIN;
                       }
                   }
-
-                  // Could readIOXs() and do something based on user pressing buttons on Machine...
                   
                   if (checkAuto > AUTO_TIME) {  // Nobody loves us, run a train anyways...
                       checkAuto = 0;
                       Serial.println("# Starting a simulation by myself...");
                       state = BEGIN;
                   }
-
-                  // if room is dark, go to sleep
-                  if (luxVal < LIGHT_LEVEL_SLEEP) {
-                      state = SLEEP;
-                      Serial.print("# Noticed it is getting darker...");
-                      Serial.println(luxVal);
-                  }
-                  
                   break;
                   
     case BEGIN:   // Initialize things to begin a "meet sequence"...
@@ -277,83 +160,26 @@ void loop() {
                   // ... set up array/list of controls and indications, initialize counters, etc
 
                   Serial.println("# Initializing a simulation...");
-                  stime = 0; // reset simulation timer
-                  
-                  // Read settings from machine (if needed)
-                  // readIOXs();
-                  //
-                  // look at INPUTS[bank][board] as needed...
-                  // if (bitRead(INPUTS[bank][board], bitnum)) { ... }
-                  // 
-                  // Turn on bits that need to be on, etc...
-                  // bitSet(OUTPUTS[bank][board], bitnum);
-                  // bitClear(OUTPUTS[bank][board], bitnum);
-                  OUTPUTS[0][0] = 0xF00F;
-                  OUTPUTS[1][0] = 0x0FF0;
-                  writeIOXs();
-                  
+                  beginSimulation();
                   isRunning = true;
                   state = RUNNING;
                   break;
 
     case RUNNING: // collect actionable things and do them until done...
 
-                  // *do* the simulation - send I2C packets to the cTc machine, etc
-                  // The stime (simulation time) variable will be updated for you once every second
-                  // so you can simply check to see if it is time to do the next thing on the list...
-
                   Serial.println("# Running a simulation...");
-                  
-                  // ...
-                  
-                  // update machine hardware:
-                  
-                  // Read settings from machine (if needed)
-                  // readIOXs();
-                  //
-                  // look at INPUTS[bank][board] as needed...
-                  // if (bitRead(INPUTS[bank][board], bitnum)) { ... }
-                  // 
-                  // Turn on bits that need to be on, etc...
-                  // bitSet(OUTPUTS[bank][board], bitnum);
-                  // bitClear(OUTPUTS[bank][board], bitnum);
-                  //
-
-                  OUTPUTS[0][0] = stime | (stime << 8);
-                  OUTPUTS[1][0] = millis() | (millis() << 8);
-                  writeIOXs();
-
-                  
-                  // FOR SIMPLE DEMO: 
-                  // if stime > 10 we say simulation is done
-                  
-                  if (stime > 10) {
+                  if (!runSimulation()) {
                       state = FINISHED;
-                  } else {
-                      delay( 1 * SECOND );
                   }
                   break;
                   
     case FINISHED:  // do any cleanup, reset cTc machine lights, etc.
 
                   Serial.println("# Cleaning up after a simulation...");
-                  
-                  // Read settings from machine (if needed)
-                  // readIOXs();
-                  //
-                  // look at INPUTS[bank][board] as needed...
-                  // if (bitRead(INPUTS[bank][board], bitnum)) { ... }
-                  // 
-                  // Turn on bits that need to be on, etc...
-                  // bitSet(OUTPUTS[bank][board], bitnum);
-                  // bitClear(OUTPUTS[bank][board], bitnum);
-                  OUTPUTS[0][0] = 0xF00F;
-                  OUTPUTS[1][0] = 0x0FF0;
-                  writeIOXs();
-                  
+
                   isRunning = false;
                   checkAuto   = 0;  // reset auto run counter since we just ran...
-                  state = WAITING;
+                  state = WAITING;                  
                   break;
     }
 }
