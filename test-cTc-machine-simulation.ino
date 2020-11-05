@@ -30,7 +30,7 @@ extern bool runSimulation(void);
 
 
 QwiicButton button;
-enum AnimationState { SLEEP, NIGHT, WAKE, WAITING, BEGIN, RUNNING, FINISHED };
+enum AnimationState { WAITING, BEGIN, RUNNING, FINISHED };
 
 void setup() {
     Serial.begin(115200);
@@ -80,18 +80,10 @@ void setup() {
     
 }
 
-bool isRunning = false;
-bool isWaiting = false;
-long stime = 0;
-int tick = 100;
-int  writeword = 0;
-
 #define SECOND  1000
 #define MINUTE  (60 * SECOND)
 #define HOUR    (60 * MINUTE)
 
-elapsedMillis checkTime;
-#define TIME_TIME (1 * SECOND)       // 1 Second counter for doing "simulated" things...
 
 elapsedMillis checkAuto;
 // #define AUTO_TIME (15 * MINUTE)     // How often to initiate a simulation if nobody presses button?
@@ -112,11 +104,6 @@ AnimationState state = WAITING;
 
 void loop() {
 
-    if (isRunning && (checkTime > TIME_TIME)) {
-        stime++;
-        checkTime = 0;
-    }
-
     if (checkBlink > BLINK_TIME) {
         if (blinker) { blinker = false; } else { blinker = true; }
         checkBlink = 0;
@@ -129,10 +116,6 @@ void loop() {
     }
     
     switch (state) {
-
-      case SLEEP:
-      case NIGHT:
-      case WAKE:
       case WAITING:  // Attract mode - we want people to notice us and press our button
                      // check for buttom press every few 10's of mS...
                   
@@ -161,7 +144,6 @@ void loop() {
 
                   Serial.println("# Initializing a simulation...");
                   beginSimulation();
-                  isRunning = true;
                   state = RUNNING;
                   break;
 
@@ -177,7 +159,6 @@ void loop() {
 
                   Serial.println("# Cleaning up after a simulation...");
 
-                  isRunning = false;
                   checkAuto   = 0;  // reset auto run counter since we just ran...
                   state = WAITING;                  
                   break;
