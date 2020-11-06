@@ -2,10 +2,10 @@
 
 // I2C IOX32 interface
 // INPUTS and OUTPUTS are arrays of bits for/from the IOexpanders
-bool     INSTALLED[2][7]; // is there an IO expander there?
-uint16_t CONFIG[2][7];    // '1' bits are inputs, '0' are outputs
-uint16_t INPUTS[2][7];
-uint16_t OUTPUTS[2][7];
+bool     INSTALLED[2][8]; // is there an IO expander there?
+uint16_t CONFIG[2][8];    // '1' bits are inputs, '0' are outputs
+uint16_t INPUTS[2][8];
+uint16_t OUTPUTS[2][8];
 
     
 void initIOXs(void) {

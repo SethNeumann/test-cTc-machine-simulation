@@ -1,17 +1,17 @@
 #ifndef _I2C_IO_H
 #define _I2C_IO_H
 
-// #define IOX        // MCP23017 16 bit expanders
-#define IO_PLOCHER    // PCF8574 & PCF8574A 8-bit expanders
+#define IOX        // MCP23017 16 bit expanders
+//#define IO_PLOCHER    // PCF8574 & PCF8574A 8-bit expanders
 
 // #define DEBUG_IOX
 
 // I2C IOX32 interface
 // INPUTS and OUTPUTS are arrays of bits for/from the IOexpanders
-extern bool     INSTALLED[2][7]; // is there an IO expander there?
-extern uint16_t CONFIG[2][7];    // '1' bits are inputs, '0' are outputs
-extern uint16_t INPUTS[2][7];
-extern uint16_t OUTPUTS[2][7];
+extern bool     INSTALLED[2][8]; // is there an IO expander there?
+extern uint16_t CONFIG[2][8];    // '1' bits are inputs, '0' are outputs
+extern uint16_t INPUTS[2][8];
+extern uint16_t OUTPUTS[2][8];
 
 #define IOX_ADDR        0x20
 
